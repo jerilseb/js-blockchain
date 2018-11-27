@@ -4,7 +4,6 @@ const Blockchain = require('./blockchain');
 const uuid = require('uuid/v1');
 const axios = require("axios");
 
-
 const port = process.argv[2];
 if(!port) throw new Error("No port given");
 
@@ -27,8 +26,24 @@ app.post('/transaction', function(req, res) {
 	res.json({ note: `Transaction will be added in block ${blockIndex}.` });
 });
 
-// mine a block
-app.get('/mine', function(req, res) {
+
+app.post('/transaction/broadcast', async (req, res) => {
+	const newTransaction = bitcoin.createNewTransaction(req.body.amount, req.body.sender, req.body.recipient);
+	bitcoin.addTransactionToPendingTransactions(newTransaction);
+
+	const requests = bitcoin.networkNodes.map(networkNodeUrl => axios({
+		url: networkNodeUrl + '/transaction',
+		method: 'POST',
+		data: newTransaction
+	}));
+
+	await axios.all(requests);
+
+	res.json({ note: 'Transaction created and broadcast successfully.' });
+});
+
+
+app.get('/mine', async (req, res) => {
 	const lastBlock = bitcoin.getLastBlock();
 	const previousBlockHash = lastBlock['hash'];
 	const currentBlockData = {
@@ -37,19 +52,58 @@ app.get('/mine', function(req, res) {
 	};
 	const nonce = bitcoin.proofOfWork(previousBlockHash, currentBlockData);
 	const blockHash = bitcoin.hashBlock(previousBlockHash, currentBlockData, nonce);
-
-	bitcoin.createNewTransaction(12.5, "00", nodeAddress);
-
 	const newBlock = bitcoin.createNewBlock(nonce, previousBlockHash, blockHash);
+	console.log(newBlock);
+
+	const requests = bitcoin.networkNodes.map(networkNodeUrl => axios({
+		url: networkNodeUrl + '/receive-new-block',
+		method: 'POST',
+		data: { newBlock }
+	}));
+
+	await axios.all(requests);
+
+	await axios({
+		url: bitcoin.currentNodeUrl + '/transaction/broadcast',
+		method: 'POST',
+		data: {
+			amount: 12.5,
+			sender: "00",
+			recipient: nodeAddress
+		}
+	});
+
 	res.json({
-		note: "New block mined successfully",
+		note: "New block mined & broadcast successfully",
 		block: newBlock
 	});
 });
 
+app.post('/receive-new-block', function(req, res) {
+	console.log("body is ", req.body);
+	const { newBlock } = req.body;
+	const lastBlock = bitcoin.getLastBlock();
+	const correctHash = lastBlock.hash === newBlock.previousBlockHash; 
+	const correctIndex = lastBlock['index'] + 1 === newBlock['index'];
+
+	if (correctHash && correctIndex) {
+		bitcoin.chain.push(newBlock);
+		bitcoin.pendingTransactions = [];
+		res.json({
+			note: 'New block received and accepted.',
+			newBlock: newBlock
+		});
+	} else {
+		res.json({
+			note: 'New block rejected.',
+			newBlock: newBlock
+		});
+	}
+});
+
 app.post('/register-and-broadcast-node', async (req, res) => {
 	const newNodeUrl = req.body.newNodeUrl;
-	if (bitcoin.networkNodes.indexOf(newNodeUrl) == -1) bitcoin.networkNodes.push(newNodeUrl);
+	if (bitcoin.currentNodeUrl !== newNodeUrl && bitcoin.networkNodes.indexOf(newNodeUrl) == -1) bitcoin.networkNodes.push(newNodeUrl);
 
 	const requests = bitcoin.networkNodes.map(networkNodeUrl => axios({
 		url: networkNodeUrl + '/register-node',
@@ -73,10 +127,10 @@ app.post('/register-node', function(req, res) {
 	const newNodeUrl = req.body.newNodeUrl;
 	const nodeNotAlreadyPresent = bitcoin.networkNodes.indexOf(newNodeUrl) == -1;
 	const notCurrentNode = bitcoin.currentNodeUrl !== newNodeUrl;
+
 	if (nodeNotAlreadyPresent && notCurrentNode) bitcoin.networkNodes.push(newNodeUrl);
 	res.json({ note: 'New node registered successfully.' });
 });
-
 
 // register multiple nodes at once
 app.post('/register-nodes-bulk', function(req, res) {
