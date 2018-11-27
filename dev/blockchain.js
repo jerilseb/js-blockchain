@@ -57,7 +57,7 @@ class Blockchain {
     proofOfWork(previousBlockHash, currentBlockData) {
         let nonce = 0;
         let hash = this.hashBlock(previousBlockHash, currentBlockData, nonce);
-        while (hash.substring(0, 4) !== '0000') {
+        while (hash.substring(0, 6) !== '000000') {
             nonce++;
             hash = this.hashBlock(previousBlockHash, currentBlockData, nonce);
         }
